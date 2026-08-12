@@ -15,7 +15,11 @@
 - ⚡ **Dos formas de sincronizar**:
   - *Manual*: botón **Sincronizar ahora** en el panel
   - *Auto*: al conectar la SSD USB (configurable)
-- 🗂️ **Pares ilimitados**: tabla de pares con alta/edición/borrado desde el propio panel
+- 🗂️ **Pares ilimitados**: gestión completa desde Clic derecho → *Configurar → Pares*
+  (tabla con alta/edición/borrado y selector de carpetas nativo de KDE)
+- ⏳ **Cambios pendientes**: el panel muestra con un badge (⚠ N / ✓ / …) si las carpetas
+  del host tienen cambios aún no sincronizados (cálculo con `rsync --dry-run`, caché de 30s)
+- 🕐 **Última sincronización por par** en el panel, además del resumen global
 - 🔍 **Identificación por UUID**: aunque cambies el nombre de la unidad o tengas varias
   memorias USB conectadas, el plasmoid siempre sabe cuál es la suya
 - 📁 **Selector de carpetas nativo de KDE** (KFileWidget — la misma UI de Dolphin) con
@@ -34,8 +38,10 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  PLASMOID  rccamacho.usbsync                                │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │ Tabla de pares · Formulario añadir/editar · Progreso  │  │
-│  │ Estado SSD · Botón sincronizar · Última sync          │  │
+│  │ Icono panel (estado + % sync)                        │  │
+│  │ Popup: pares (solo lectura) · badge pendientes ⚠/✓  │  │
+│  │ Última sync por par · Progreso · Botón sincronizar   │  │
+│  │ Configurar: pestaña Pares (CRUD) + General (SSD)     │  │
 │  └──────────────────────────┬────────────────────────────┘  │
 └─────────────────────────────┼───────────────────────────────┘
                               │  HTTP 127.0.0.1:8135 (XMLHttpRequest)
@@ -47,6 +53,7 @@
 │  • rsync -a --partial --info=progress2 --stats [--delete]   │
 │  • Selector de carpetas (kdialog / Dolphin service menu)    │
 │  • Autosync al conectar (hilo monitor 2s)                   │
+│  • Cambios pendientes por par (rsync --dry-run, caché 30s)   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,12 +112,23 @@ systemctl --user restart plasma-plasmashell.service
 
 1. Clic derecho en el panel → **Añadir widgets** → busca **Trove**
 2. Arrástralo al panel (el punto del icono muestra el estado: 🟢 SSD conectada, 🔵 sincronizando, ⚪ ausente)
-3. Clic en el icono → **Añadir par** → elige carpeta origen y destino → **Guardar**
+3. El icono muestra los pares configurados (solo lectura) con su badge de cambios
+   pendientes y su última sincronización; el botón **Sincronizar ahora** lanza el backup
 
-### 5. Fijar la SSD objetivo (opcional pero recomendado)
+### 5. Configurar los pares
 
-Clic derecho en el widget → **Configurar** → selecciona tu SSD en el desplegable →
-**Guardar**. Se identifica por UUID: aunque tengas varias unidades, siempre será esa.
+Clic derecho en el widget → **Configurar** → pestaña **Pares** → **Añadir par** →
+elige la carpeta origen del equipo y la subcarpeta destino en la SSD → **Guardar**.
+
+- Clic en una fila para **editar**; el icono 🗑 la **borra**
+- El badge del panel indica los cambios no sincronizados: ⚠ N (pendientes), ✓ (al día),
+  … (calculando) o — (SSD ausente)
+
+### 6. Fijar la SSD objetivo (opcional pero recomendado)
+
+Clic derecho en el widget → **Configurar** → pestaña **General** → selecciona tu SSD
+en el desplegable → **Guardar**. Se identifica por UUID: aunque tengas varias
+unidades, siempre será esa.
 
 ---
 
@@ -139,6 +157,7 @@ systemctl --user restart plasma-plasmashell.service
 | GET | `/api/devices` | Dispositivos extraíbles detectados (label, UUID, mount) |
 | GET | `/api/config` | Configuración actual |
 | GET | `/api/log` | Últimas 40 líneas del log |
+| GET | `/api/pending` | Cambios pendientes por par (`{pair_id: {pending, n, error}}`, caché 30s) |
 | POST | `/api/pairs` | Añadir/actualizar par `{id?, source, dest_rel, delete}` |
 | POST | `/api/pairs/delete` | Borrar par `{id}` |
 | POST | `/api/config` | Guardar config `{ssd_uuid, ssd_label, autosync_on_connect, default_delete}` |

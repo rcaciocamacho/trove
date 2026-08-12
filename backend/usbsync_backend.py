@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 
 PORT = 8135
+PENDING_TTL = 30   # caché del cálculo de cambios pendientes (segundos)
 USER = os.environ.get("USER") or os.environ.get("LOGNAME") or getpass.getuser()
 MEDIA_DIR = Path("/run/media") / USER
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "usbsync"
@@ -52,6 +53,11 @@ state = {
         "last_line": "",
     },
     "last_sync": None,  # {"ts": iso, "ok": bool, "msg": str, "files": int, "trigger": str}
+    "pending": {        # cambios no sincronizados por par (caché de rsync --dry-run)
+        "pairs": {},    # pair_id -> {"pending": bool|None, "n": int, "error": str|None}
+        "computed_at": 0.0,
+        "computing": False,
+    },
     "lock": threading.Lock(),
 }
 
@@ -397,6 +403,15 @@ def run_all_syncs(trigger: str = "manual"):
                 break  # parado a mitad
         r = run_sync(pair, trigger, pair_index=idx, pairs_total=total)
         results.append(r)
+        # última sincronización por par (persistida) + invalidar caché de pendientes
+        with state["lock"]:
+            pair["last_sync"] = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "ok": r["ok"],
+                "files": r["files"],
+            }
+            state["pending"]["computed_at"] = 0.0
+        save_config()
         if not r["ok"]:
             break
     total_files = sum(r["files"] for r in results)
@@ -421,6 +436,64 @@ def stop_sync():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+# ---------------------------------------------------------------- pending changes
+
+def _pair_pending(pair: dict, mount: str) -> dict:
+    """Cambios no sincronizados de un par vía `rsync --dry-run` (cuenta líneas).
+
+    --out-format imprime una línea por elemento que CAMBIARÍA; sin -v no imprime
+    los ya sincronizados, así que contar líneas = nº de cambios pendientes.
+    """
+    src = pair.get("source", "")
+    dest_rel = (pair.get("dest_rel") or "").strip().strip("/")
+    if not src or not os.path.isdir(src):
+        return {"pending": None, "n": 0, "error": "origen no existe"}
+    if not dest_rel:
+        return {"pending": None, "n": 0, "error": "destino vacío"}
+    dest = os.path.join(mount, dest_rel)
+    cmd = ["rsync", "-a", "--dry-run", "--out-format=%i %n"]
+    if pair.get("delete"):
+        cmd.append("--delete")
+    cmd += [src.rstrip("/") + "/", dest.rstrip("/") + "/"]
+    try:
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             errors="replace", env=env, timeout=120)
+        lines = [l for l in out.stdout.splitlines() if l.strip()]
+        err = None if out.returncode == 0 else f"rc={out.returncode}"
+        return {"pending": bool(lines), "n": len(lines), "error": err}
+    except subprocess.TimeoutExpired:
+        return {"pending": None, "n": 0, "error": "timeout"}
+    except FileNotFoundError:
+        return {"pending": None, "n": 0, "error": "rsync ausente"}
+
+def compute_pending(force: bool = False):
+    """Calcula los cambios pendientes por par si la caché está vieja. Hilo propio."""
+    p = state["pending"]
+    with state["lock"]:
+        if p["computing"]:
+            return
+        if not force and time.time() - p["computed_at"] < PENDING_TTL:
+            return
+        if state["sync"]["running"]:
+            return
+        p["computing"] = True
+    try:
+        ssd = detect_ssd()
+        result = {}
+        if ssd["connected"]:
+            for pair in state["config"].get("pairs", []):
+                result[pair["id"]] = _pair_pending(pair, ssd["mount"])
+        with state["lock"]:
+            p["pairs"] = result
+            p["computed_at"] = time.time()
+    except Exception as e:
+        log(f"[PENDING] error: {e}")
+    finally:
+        with state["lock"]:
+            p["computing"] = False
 
 # ---------------------------------------------------------------- monitor (autosync)
 
@@ -497,7 +570,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "sync": sync,
                 "last_sync": state["last_sync"],
                 "pairs_count": len(state["config"].get("pairs", [])),
-                "version": "1.0.0",
+                "pairs": state["config"].get("pairs", []),
+                "version": "1.1.0",
             })
         elif path == "/api/pairs":
             self._send({"ok": True, "pairs": state["config"].get("pairs", [])})
@@ -512,6 +586,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 lines = []
             self._send({"ok": True, "lines": lines})
+        elif path == "/api/pending":
+            # lanza el cálculo si la caché está vieja; responde al momento
+            threading.Thread(target=compute_pending, daemon=True).start()
+            with state["lock"]:
+                self._send({
+                    "ok": True,
+                    "computing": state["pending"]["computing"],
+                    "computed_at": state["pending"]["computed_at"],
+                    "ssd_connected": detect_ssd()["connected"],
+                    "pairs": state["pending"]["pairs"],
+                })
         else:
             self._send({"ok": False, "error": "not found"}, 404)
 
@@ -543,6 +628,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pairs.append({"id": pair_id, "source": source, "dest_rel": dest_rel, "delete": delete})
             save_config()
             log(f"[CONFIG] par {pair_id}: {source} -> {dest_rel} (delete={delete})")
+            with state["lock"]:
+                state["pending"]["computed_at"] = 0.0  # invalidar caché de pendientes
             saved = next((p for p in pairs if p.get("id") == pair_id), pairs[-1])
             self._send({"ok": True, "pair": saved})
         elif path == "/api/pairs/delete":
@@ -551,6 +638,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             state["config"]["pairs"] = [p for p in pairs if p.get("id") != pair_id]
             save_config()
             log(f"[CONFIG] par eliminado: {pair_id}")
+            with state["lock"]:
+                state["pending"]["computed_at"] = 0.0  # invalidar caché de pendientes
             self._send({"ok": True})
         elif path == "/api/config":
             cfg = state["config"]
@@ -595,6 +684,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             state["config"]["pairs"] = [p for p in pairs if p.get("id") != pair_id]
             save_config()
             log(f"[CONFIG] par eliminado: {pair_id}")
+            with state["lock"]:
+                state["pending"]["computed_at"] = 0.0  # invalidar caché de pendientes
             self._send({"ok": True})
         else:
             self._send({"ok": False, "error": "not found"}, 404)

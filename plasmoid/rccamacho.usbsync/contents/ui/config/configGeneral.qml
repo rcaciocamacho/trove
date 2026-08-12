@@ -179,7 +179,7 @@ KCM.SimpleKCM {
         PlasmaComponents3.Label {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.largeSpacing
-            text: "Selecciona la SSD USB con la que sincronizar. El dispositivo se identifica por su UUID (identificador único de la partición), así que aunque cambies su nombre o label, el plasmoid siempre sabrá cuál es. «Automático» usa la única unidad extraíble montada."
+            text: "Selecciona la SSD USB con la que sincronizar. El dispositivo se identifica por su UUID (identificador único de la partición), así que aunque cambies su nombre o label, el plasmoid siempre sabrá cuál es. «Automático» usa la única unidad extraíble montada. Los pares de sincronización se gestionan en la pestaña Pares."
             color: Kirigami.Theme.textColor
             opacity: 0.6
             wrapMode: Text.WordWrap

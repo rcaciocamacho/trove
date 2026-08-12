@@ -8,7 +8,7 @@
         "Icon": "drive-removable-media-usb",
         "Authors": [{"Name": "Rubén Camacho", "Email": ""}],
         "License": "GPL-2.0+",
-        "Version": "1.0.0",
+        "Version": "1.1.0",
         "Website": "",
         "Category": "Utilities"
     },

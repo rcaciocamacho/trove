@@ -34,29 +34,10 @@ PlasmoidItem {
     property string syncLastLine: ""
     property string lastSyncText: "Sin sincronizaciones todavía"
     property bool lastSyncOk: true
+    property bool pendingComputing: false
+    property var pendingMap: ({})      // pair_id -> {pending, n, error}
 
-    // ---- estado del formulario (propiedades root — los ids del form viven
-    // dentro de fullRepresentation y NO son visibles desde funciones root) ----
-    property string formMode: "add"     // "add" | "edit"
-    property string formId: ""
-    property bool formVisible: false
-    property string formSource: ""
-    property string formDest: ""
-    property bool formDel: false
-    property int currentRow: -1
-
-    // ---- bridge para closures (picker de carpetas) ----
-    property var pendingPick: null      // {field, path}
-    onPendingPickChanged: {
-        if (!pendingPick) return
-        if (pendingPick.field === "source")
-            root.formSource = pendingPick.path
-        else
-            root.formDest = pendingPick.path
-        pendingPick = null
-    }
-
-    ListModel { id: pairs }
+    ListModel { id: pairs }            // {id, source, dest_rel, del, last_ts, last_ok, last_files}
 
     // ---- API helpers ----
     function apiGet(path, cb) {
@@ -110,75 +91,71 @@ PlasmoidItem {
                 root.lastSyncText = "Sin sincronizaciones todavía"
                 root.lastSyncOk = true
             }
-        })
-    }
-
-    function refreshPairs() {
-        apiGet("/api/pairs", function(d) {
-            if (!d || !d.pairs) return
+            // pares configurados (con su última sync por par)
             pairs.clear()
-            for (var i = 0; i < d.pairs.length; i++) {
-                var o = d.pairs[i]
-                pairs.append({id: o.id, source: o.source, dest_rel: o.dest_rel, del: !!o.delete})
+            var pl = d.pairs || []
+            for (var i = 0; i < pl.length; i++) {
+                var o = pl[i]
+                var ls = o.last_sync
+                pairs.append({
+                    id: o.id, source: o.source, dest_rel: o.dest_rel, del: !!o.delete,
+                    last_ts: ls ? ls.ts : "", last_ok: ls ? ls.ok === true : true,
+                    last_files: ls ? (ls.files || 0) : 0
+                })
             }
-            // si editábamos un par que ya no existe, volver a modo añadir
-            if (root.formMode === "edit") {
-                var found = false
-                for (var j = 0; j < pairs.count; j++)
-                    if (pairs.get(j).id === root.formId) { found = true; break }
-                if (!found) resetForm()
-            }
         })
     }
 
-    function resetForm() {
-        root.formMode = "add"
-        root.formId = ""
-        root.formVisible = false
-        root.formSource = ""
-        root.formDest = ""
-        root.formDel = false
-        root.currentRow = -1
-    }
-
-    function showAddForm() {
-        resetForm()
-        root.formMode = "add"
-        root.formVisible = true
-    }
-
-    function selectPair(index) {
-        if (index < 0 || index >= pairs.count) return
-        var p = pairs.get(index)
-        root.formMode = "edit"
-        root.formId = p.id
-        root.formSource = p.source
-        root.formDest = p.dest_rel
-        root.formDel = p.del
-        root.currentRow = index
-        root.formVisible = true
-    }
-
-    function saveForm() {
-        var source = root.formSource.trim()
-        var dest = root.formDest.trim()
-        if (!source) return
-        var payload = {source: source, dest_rel: dest, delete: root.formDel}
-        if (root.formMode === "edit") payload.id = root.formId
-        apiPost("/api/pairs", payload, function(d) {
-            if (d && d.ok) { resetForm(); refreshPairs() }
+    function refreshPending() {
+        apiGet("/api/pending", function(d) {
+            if (!d) return
+            root.pendingComputing = d.computing === true
+            root.pendingMap = d.pairs || {}
         })
     }
 
-    function deletePair(index) {
-        var p = pairs.get(index)
-        apiPost("/api/pairs/delete", {id: p.id}, function(){ refreshPairs() })
+    // ---- badges de cambios pendientes por par ----
+    function badgeState(id) {
+        if (root.syncRunning) return "sync"
+        if (!root.ssdConnected) return "off"
+        if (root.pendingComputing) return "calc"
+        var e = root.pendingMap ? root.pendingMap[id] : null
+        if (!e) return "off"
+        if (e.error) return "err"
+        if (e.pending === true) return "pend"
+        if (e.pending === false) return "ok"
+        return "off"
     }
-
-    function pickFolder(start, field) {
-        apiPost("/api/pick_folder", {start: start || "", field: field || "source"}, function(d) {
-            if (d && d.picked) root.pendingPick = {field: field, path: d.picked}
-        })
+    function badgeText(id) {
+        var s = root.badgeState(id)
+        if (s === "pend") {
+            var e = root.pendingMap[id]
+            return "⚠ " + e.n
+        }
+        if (s === "ok") return "✓"
+        if (s === "calc") return "…"
+        if (s === "err") return "?"
+        if (s === "off") return "—"
+        if (s === "sync") return "⇄"
+        return ""
+    }
+    function badgeBg(id) {
+        var s = root.badgeState(id)
+        if (s === "pend") return "#3d2a0a"
+        if (s === "ok") return "#0a3d1a"
+        return "#12202a"
+    }
+    function badgeFg(id) {
+        var s = root.badgeState(id)
+        if (s === "pend") return root.cAmber
+        if (s === "ok") return root.cGreen
+        if (s === "calc" || s === "err") return root.cTextMed
+        return root.cTextDim
+    }
+    function pairLastText(ts, ok, files) {
+        if (!ts) return "Sin sincronizar todavía"
+        var f = files > 0 ? (" · " + files + " arch") : ""
+        return (ok ? "Última: " : "Falló: ") + ts + f
     }
 
     function syncNow() { apiPost("/api/sync", {}, function(){ refreshStatus() }) }
@@ -192,7 +169,19 @@ PlasmoidItem {
         onTriggered: refreshStatus()
     }
 
-    Component.onCompleted: { refreshStatus(); refreshPairs() }
+    // cambios pendientes: solo mientras el panel está expandido
+    Timer {
+        id: pendingTimer
+        interval: 5000
+        repeat: true
+        running: root.expanded
+        onTriggered: refreshPending()
+    }
+    onExpandedChanged: {
+        if (root.expanded) root.refreshPending()
+    }
+
+    Component.onCompleted: refreshStatus()
 
     // ============================================================
     //  ICONO DEL PANEL
@@ -338,83 +327,105 @@ PlasmoidItem {
                 }
             }
 
-            // ---------- cabecera de tabla ----------
+            // ---------- pares configurados (solo lectura) ----------
             Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 24
-                Layout.leftMargin: 10
-                Layout.rightMargin: 10
-                visible: pairs.count > 0
-                RowLayout {
-                    anchors.fill: parent
-                    spacing: 6
-                    PlasmaComponents3.Label { text: "ORIGEN"; Layout.fillWidth: true; font.pixelSize: 9; color: root.cTextDim; font.weight: Font.DemiBold }
-                    PlasmaComponents3.Label { text: "DESTINO"; Layout.fillWidth: true; font.pixelSize: 9; color: root.cTextDim; font.weight: Font.DemiBold }
-                    PlasmaComponents3.Label { text: "ESP"; Layout.preferredWidth: 34; font.pixelSize: 9; color: root.cTextDim; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter }
-                    Item { Layout.preferredWidth: 26 }
+                Layout.leftMargin: 14
+                Layout.rightMargin: 14
+                Layout.topMargin: 6
+                visible: root.backendUp && pairs.count > 0
+                PlasmaComponents3.Label {
+                    text: "PARES CONFIGURADOS  ·  " + pairs.count
+                    font.pixelSize: 9
+                    font.weight: Font.DemiBold
+                    color: root.cTextDim
                 }
             }
 
-            // ---------- tabla de pares (solo lectura, clic = editar) ----------
             ListView {
                 id: pairList
                 Layout.fillWidth: true
                 Layout.preferredHeight: contentHeight
+                Layout.leftMargin: 10
+                Layout.rightMargin: 10
                 visible: pairs.count > 0
                 clip: true
                 model: pairs
                 spacing: 2
-                leftMargin: 10
-                rightMargin: 10
-                currentIndex: -1
+                interactive: false
 
                 delegate: Rectangle {
                     width: pairList.width - 20
-                    height: 30
+                    height: 42
                     radius: 4
-                    color: root.currentRow === index ? root.cBorder : root.cPanel
-                    border.color: "transparent"
-                    border.width: 1
+                    color: root.cPanel
 
-                    // MouseArea DEBAJO del contenido (declarado primero → z-order inferior)
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: selectPair(index)
-                    }
-
-                    RowLayout {
+                    ColumnLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 8
-                        anchors.rightMargin: 4
-                        spacing: 6
-                        PlasmaComponents3.Label {
-                            text: model.source
+                        anchors.rightMargin: 8
+                        anchors.topMargin: 4
+                        anchors.bottomMargin: 3
+                        spacing: 1
+                        RowLayout {
                             Layout.fillWidth: true
-                            elide: Text.ElideMiddle
-                            font.pixelSize: 10
-                            color: root.cText
+                            spacing: 6
+                            PlasmaComponents3.Label {
+                                text: model.source
+                                Layout.fillWidth: true
+                                elide: Text.ElideMiddle
+                                font.pixelSize: 11
+                                color: root.cText
+                            }
+                            PlasmaComponents3.Label {
+                                text: "→"
+                                font.pixelSize: 11
+                                color: root.cTextDim
+                            }
+                            PlasmaComponents3.Label {
+                                text: model.dest_rel
+                                Layout.fillWidth: true
+                                elide: Text.ElideMiddle
+                                font.pixelSize: 11
+                                color: root.cTextMed
+                            }
+                            Item {
+                                Layout.preferredWidth: badgeLabel.implicitWidth + 12
+                                Layout.preferredHeight: 16
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 8
+                                    color: root.badgeBg(model.id)
+                                    border.color: root.cBorder
+                                    border.width: 1
+                                }
+                                PlasmaComponents3.Label {
+                                    id: badgeLabel
+                                    anchors.centerIn: parent
+                                    text: root.badgeText(model.id)
+                                    font.pixelSize: 9
+                                    font.weight: Font.DemiBold
+                                    color: root.badgeFg(model.id)
+                                }
+                            }
                         }
-                        PlasmaComponents3.Label {
-                            text: "→ " + model.dest_rel
+                        RowLayout {
                             Layout.fillWidth: true
-                            elide: Text.ElideMiddle
-                            font.pixelSize: 10
-                            color: root.cTextMed
-                        }
-                        PlasmaComponents3.Label {
-                            text: model.del ? "✓" : "—"
-                            Layout.preferredWidth: 34
-                            font.pixelSize: 10
-                            color: model.del ? root.cGreen : root.cTextDim
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-                        Controls.Button {
-                            Layout.preferredWidth: 26
-                            Layout.preferredHeight: 22
-                            implicitWidth: 26
-                            implicitHeight: 22
-                            icon.name: "edit-delete"
-                            onClicked: deletePair(index)
+                            spacing: 6
+                            PlasmaComponents3.Label {
+                                text: root.pairLastText(model.last_ts, model.last_ok, model.last_files)
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                font.pixelSize: 9
+                                color: model.last_ok ? root.cTextDim : root.cRed
+                            }
+                            PlasmaComponents3.Label {
+                                text: model.del ? "espejo exacto" : ""
+                                font.pixelSize: 9
+                                color: root.cTextDim
+                                opacity: 0.7
+                            }
                         }
                     }
                 }
@@ -423,137 +434,14 @@ PlasmoidItem {
             // ---------- placeholder sin pares ----------
             Item {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 30
+                Layout.preferredHeight: 34
                 visible: pairs.count === 0 && root.backendUp
                 PlasmaComponents3.Label {
                     anchors.centerIn: parent
-                    text: "Sin pares todavía — añade el primero abajo"
+                    text: "Sin pares — añádelos en Configurar → Pares"
                     font.pixelSize: 11
                     color: root.cTextDim
                     opacity: 0.9
-                }
-            }
-
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1
-                color: root.cBorder
-                opacity: 0.5 }
-
-            // ---------- botón añadir (formulario oculto) ----------
-            Controls.Button {
-                Layout.fillWidth: true
-                Layout.leftMargin: 10
-                Layout.rightMargin: 10
-                Layout.topMargin: 8
-                implicitHeight: 30
-                visible: root.backendUp && !root.formVisible
-                text: "Añadir par"
-                icon.name: "list-add"
-                onClicked: showAddForm()
-            }
-
-            // ---------- formulario añadir/editar (oculto hasta «Añadir par») ----------
-            ColumnLayout {
-                id: formCol
-                Layout.fillWidth: true
-                visible: root.formVisible
-                spacing: 0
-
-                Item { Layout.fillWidth: true; Layout.preferredHeight: 8 }
-                PlasmaComponents3.Label {
-                    Layout.leftMargin: 12
-                    Layout.rightMargin: 12
-                    text: root.formMode === "edit" ? "✏  EDITAR PAR" : "➕  AÑADIR PAR"
-                    font.pixelSize: 9
-                    font.weight: Font.DemiBold
-                    color: root.formMode === "edit" ? root.cAmber : root.cPri
-                }
-                Item { Layout.preferredHeight: 4 }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 12
-                    Layout.rightMargin: 12
-                    spacing: 6
-                    PlasmaComponents3.Label {
-                        text: "Origen"
-                        font.pixelSize: 10
-                        color: root.cTextDim
-                        Layout.preferredWidth: 44
-                    }
-                    Controls.TextField {
-                        id: srcInput
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 26
-                        font.pixelSize: 11
-                        placeholderText: "carpeta del equipo"
-                        selectByMouse: true
-                        text: root.formSource
-                        onTextChanged: root.formSource = text
-                    }
-                    Controls.Button {
-                        Layout.preferredWidth: 28
-                        Layout.preferredHeight: 26
-                        implicitWidth: 28
-                        implicitHeight: 26
-                        icon.name: "folder-open"
-                        onClicked: pickFolder(srcInput.text, "source")
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 12
-                    Layout.rightMargin: 12
-                    Layout.topMargin: 4
-                    spacing: 6
-                    PlasmaComponents3.Label {
-                        text: "Destino"
-                        font.pixelSize: 10
-                        color: root.cTextDim
-                        Layout.preferredWidth: 44
-                    }
-                    Controls.TextField {
-                        id: dstInput
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 26
-                        font.pixelSize: 11
-                        placeholderText: "subcarpeta en la SSD"
-                        selectByMouse: true
-                        text: root.formDest
-                        onTextChanged: root.formDest = text
-                    }
-                    Controls.Button {
-                        Layout.preferredWidth: 28
-                        Layout.preferredHeight: 26
-                        implicitWidth: 28
-                        implicitHeight: 26
-                        icon.name: "folder-open"
-                        onClicked: pickFolder(root.ssdMount || dstInput.text, "dest")
-                    }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 12
-                    Layout.rightMargin: 12
-                    Layout.topMargin: 4
-                    spacing: 8
-                    Controls.CheckBox {
-                        id: delCheck
-                        text: "Espejo exacto (--delete)"
-                        font.pixelSize: 10
-                        checked: root.formDel
-                        onToggled: root.formDel = checked
-                    }
-                    Item { Layout.fillWidth: true }
-                    Controls.Button {
-                        text: "Cancelar"
-                        icon.name: "dialog-cancel"
-                        onClicked: resetForm()
-                    }
-                    Controls.Button {
-                        text: "Guardar"
-                        icon.name: "document-save"
-                        highlighted: true
-                        onClicked: saveForm()
-                    }
                 }
             }
 
