@@ -1,0 +1,17 @@
+{
+    "KPlugin": {
+        "Id": "rccamacho.usbsync",
+        "Name": "Trove",
+        "Name[es]": "Trove — Sincronización USB",
+        "Description": "Sync your folders to a USB SSD",
+        "Description[es]": "Sincroniza tus carpetas con una SSD USB",
+        "Icon": "drive-removable-media-usb",
+        "Authors": [{"Name": "Rubén Camacho", "Email": ""}],
+        "License": "GPL-2.0+",
+        "Version": "1.0.0",
+        "Website": "",
+        "Category": "Utilities"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

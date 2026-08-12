@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KFileItem;inode/directory;
+MimeType=inode/directory;
+Actions=useAsSource;useAsDest;
+X-KDE-Submenu=USB Sync
+
+[Desktop Action useAsSource]
+Name=Seleccionar como ORIGEN del equipo
+Icon=go-previous
+Exec=/home/rccamacho/.local/bin/usbsync_pick.sh %f source
+
+[Desktop Action useAsDest]
+Name=Seleccionar como DESTINO en la SSD
+Icon=go-next
+Exec=/home/rccamacho/.local/bin/usbsync_pick.sh %f dest

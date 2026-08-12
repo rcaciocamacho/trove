@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Qt / QML
+*.qmlc
+*.jsc
+.qmake.stash
+Makefile
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles/
+
+# KDE plasmoid build artifacts
+*.tar.gz
+*.zip
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
