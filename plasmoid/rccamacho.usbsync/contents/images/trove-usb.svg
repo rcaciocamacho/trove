@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Trove — pendrive USB con flechas de sincronización. Colores fijos (paleta HUD), inmune al theme -->
+  <defs>
+    <linearGradient id="body" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06222e"/>
+      <stop offset="100%" stop-color="#010d14"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#cfe6ee"/>
+      <stop offset="50%" stop-color="#7fa7b5"/>
+      <stop offset="100%" stop-color="#4c7280"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Flecha de sync derecha (↻) -->
+  <path d="M52 22 a14 14 0 1 0 4 11" fill="none" stroke="#00d4ff" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M54 18 l4 5 -6 1 z" fill="#00d4ff"/>
+
+  <!-- Flecha de sync izquierda (↺) -->
+  <path d="M12 42 a14 14 0 1 0 -4 -11" fill="none" stroke="#00ff88" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M10 46 l-4 -5 6 -1 z" fill="#00ff88"/>
+
+  <!-- Lengüeta del conector USB -->
+  <rect x="26" y="4" width="12" height="14" rx="1.5" fill="url(#metal)" stroke="#1a5c7a" stroke-width="1.5"/>
+  <rect x="29" y="4" width="2" height="5" fill="#f2f7f9"/>
+  <rect x="33" y="4" width="2" height="5" fill="#f2f7f9"/>
+
+  <!-- Cuerpo del pendrive -->
+  <rect x="18" y="16" width="28" height="38" rx="6" fill="url(#body)" stroke="#00d4ff" stroke-width="2.5"/>
+
+  <!-- Luz LED de actividad -->
+  <circle cx="32" cy="26" r="2.6" fill="#00ff88"/>
+  <circle cx="32" cy="26" r="1.2" fill="#baffdc"/>
+
+  <!-- Ranura decorativa -->
+  <rect x="24" y="34" width="16" height="3" rx="1.5" fill="#0d3347"/>
+  <rect x="24" y="40" width="16" height="3" rx="1.5" fill="#0d3347"/>
+</svg>

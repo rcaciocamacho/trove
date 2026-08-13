@@ -5,7 +5,7 @@
         "Name[es]": "Trove — Sincronización USB",
         "Description": "Sync your folders to a USB SSD",
         "Description[es]": "Sincroniza tus carpetas con una SSD USB",
-        "Icon": "drive-removable-media-usb",
+        "Icon": "trove-usb",
         "Authors": [{"Name": "Rubén Camacho", "Email": ""}],
         "License": "GPL-2.0+",
         "Version": "1.1.0",

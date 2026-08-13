@@ -196,10 +196,11 @@ PlasmoidItem {
             Item {
                 Layout.preferredWidth: 28
                 Layout.preferredHeight: 28
-                Kirigami.Icon {
+                Image {
                     id: compactIcon
                     anchors.centerIn: parent
-                    source: "drive-removable-media-usb"
+                    source: "../images/trove-usb.svg"
+                    sourceSize: Qt.size(22, 22)
                     width: 22
                     height: 22
                     // Animación: el icono gira mientras sincroniza
@@ -260,7 +261,7 @@ PlasmoidItem {
                     anchors.leftMargin: 14
                     anchors.rightMargin: 14
                     spacing: 8
-                    Kirigami.Icon { source: "drive-removable-media-usb"; Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
+                    Image { source: "../images/trove-usb.svg"; sourceSize: Qt.size(22, 22); Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
                     PlasmaComponents3.Label {
                         text: "Trove · Sincronización USB"
                         font.weight: Font.DemiBold
