@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -33,6 +34,9 @@ DEFAULT_CONFIG = {
     "ssd_uuid": "",             # UUID de la partición de la SSD objetivo ("" = auto)
     "ssd_label": "",            # label de la SSD (legacy; se guarda junto al uuid)
     "autosync_on_connect": True,  # sincronizar automáticamente al conectar la SSD
+    "autosync_periodic": True,    # revisión periódica activa (comprobar cambios + sincronizar si hay pendiente)
+    "check_interval_min": 10,     # cada cuántos minutos comprobar cambios (dry-run; actualiza el badge)
+    "sync_interval_hours": 3,     # cada cuántas horas sincronizar si hay cambios pendientes (0 = desactivado)
     "default_delete": False,    # espejo exacto (--delete) por defecto en pares nuevos
     "pairs": [],                # [{id, source, dest_rel, delete}]
 }
@@ -495,9 +499,42 @@ def compute_pending(force: bool = False):
         with state["lock"]:
             p["computing"] = False
 
+# ---------------------------------------------------------------- periodic autosync (check + sync)
+
+def periodic_check(ssd: dict):
+    """Solo COMPRUEBA si hay cambios locales (dry-run) y actualiza la caché
+    que alimenta el badge de pendientes. NO sincroniza. Se ejecuta en hilo
+    propio para no bloquear la monitorización."""
+    with state["lock"]:
+        if state["sync"]["running"]:
+            return
+    compute_pending(force=True)
+
+def periodic_sync_if_pending(ssd: dict):
+    """Cada N horas: si hay cambios pendientes, sincroniza todas las carpetas."""
+    with state["lock"]:
+        if state["sync"]["running"]:
+            return
+        if not state["config"].get("pairs"):
+            return
+    compute_pending(force=True)
+    with state["lock"]:
+        pairs_pending = state["pending"].get("pairs", {})
+        has_changes = any(
+            (v or {}).get("pending") and not (v or {}).get("error")
+            for v in pairs_pending.values()
+        )
+    if has_changes:
+        log("[AUTOSYNC 3h] cambios pendientes — sincronizando todas las carpetas")
+        threading.Thread(target=run_all_syncs, args=("auto",), daemon=True).start()
+    else:
+        log("[AUTOSYNC 3h] sin cambios locales pendientes")
+
 # ---------------------------------------------------------------- monitor (autosync)
 
 def monitor_loop():
+    last_check = 0.0
+    last_sync = 0.0
     while True:
         try:
             ssd = detect_ssd()
@@ -509,6 +546,20 @@ def monitor_loop():
             if state["prev_connected"] and not connected:
                 log("SSD desconectada")
             state["prev_connected"] = connected
+
+            # Revisión periódica en dos cadencias (solo con SSD conectada y activa):
+            # - cada check_interval_min: comprobar cambios (dry-run) -> badge de pendientes
+            # - cada sync_interval_hours: sincronizar si hay cambios pendientes
+            if connected and state["config"].get("autosync_periodic"):
+                now = time.time()
+                check_min = int(state["config"].get("check_interval_min") or 10)
+                sync_h = int(state["config"].get("sync_interval_hours") or 3)
+                if check_min > 0 and now - last_check >= check_min * 60:
+                    last_check = now
+                    threading.Thread(target=periodic_check, args=(ssd,), daemon=True).start()
+                if sync_h > 0 and now - last_sync >= sync_h * 3600:
+                    last_sync = now
+                    threading.Thread(target=periodic_sync_if_pending, args=(ssd,), daemon=True).start()
         except Exception as e:
             log(f"monitor error: {e}")
         time.sleep(2)
@@ -566,12 +617,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "ok": True,
                 "ssd": ssd,
                 "autosync_on_connect": bool(state["config"].get("autosync_on_connect")),
+                "autosync_periodic": bool(state["config"].get("autosync_periodic")),
+                "check_interval_min": int(state["config"].get("check_interval_min") or 10),
+                "sync_interval_hours": int(state["config"].get("sync_interval_hours") or 3),
                 "ssd_label_cfg": state["config"].get("ssd_label", ""),
                 "sync": sync,
                 "last_sync": state["last_sync"],
                 "pairs_count": len(state["config"].get("pairs", [])),
                 "pairs": state["config"].get("pairs", []),
-                "version": "1.1.0",
+                "version": "1.2.0",
             })
         elif path == "/api/pairs":
             self._send({"ok": True, "pairs": state["config"].get("pairs", [])})
@@ -587,8 +641,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 lines = []
             self._send({"ok": True, "lines": lines})
         elif path == "/api/pending":
-            # lanza el cálculo si la caché está vieja; responde al momento
-            threading.Thread(target=compute_pending, daemon=True).start()
+            # ?no_compute=1 => solo lectura de la caché (sin lanzar dry-run);
+            # sin él, lanza el cálculo si la caché está vieja; responde al momento
+            force = True
+            if "?" in self.path:
+                q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                if q.get("no_compute") == ["1"]:
+                    force = False
+            if force:
+                threading.Thread(target=compute_pending, daemon=True).start()
             with state["lock"]:
                 self._send({
                     "ok": True,
@@ -649,11 +710,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 cfg["ssd_label"] = (body.get("ssd_label") or "").strip()
             if "autosync_on_connect" in body:
                 cfg["autosync_on_connect"] = bool(body.get("autosync_on_connect"))
+            if "autosync_periodic" in body:
+                cfg["autosync_periodic"] = bool(body.get("autosync_periodic"))
+            if "check_interval_min" in body:
+                try:
+                    cfg["check_interval_min"] = max(0, int(body.get("check_interval_min") or 0))
+                except (TypeError, ValueError):
+                    cfg["check_interval_min"] = 10
+            if "sync_interval_hours" in body:
+                try:
+                    cfg["sync_interval_hours"] = max(0, int(body.get("sync_interval_hours") or 0))
+                except (TypeError, ValueError):
+                    cfg["sync_interval_hours"] = 3
             if "default_delete" in body:
                 cfg["default_delete"] = bool(body.get("default_delete"))
             save_config()
             log(f"[CONFIG] actualizado: uuid='{cfg['ssd_uuid']}' label='{cfg['ssd_label']}' "
-                f"autosync={cfg['autosync_on_connect']}")
+                f"autosync={cfg['autosync_on_connect']} periódico={cfg['autosync_periodic']} "
+                f"check={cfg['check_interval_min']}min sync={cfg['sync_interval_hours']}h")
             self._send({"ok": True, "config": cfg})
         elif path == "/api/sync":
             with state["lock"]:
