@@ -114,6 +114,26 @@ PlasmoidItem {
         })
     }
 
+    // Lectura ligera de la caché de pendientes (sin forzar dry-run): alimenta
+    // el circulito del icono aunque el panel esté cerrado. El backend la
+    // refresca periódicamente (cada check_interval_min).
+    function refreshPendingLight() {
+        apiGet("/api/pending?no_compute=1", function(d) {
+            if (!d) return
+            root.pendingMap = d.pairs || {}
+        })
+    }
+
+    // ¿Hay algún par con cambios pendientes?
+    function anyPending() {
+        var keys = Object.keys(root.pendingMap)
+        for (var i = 0; i < keys.length; i++) {
+            var e = root.pendingMap[keys[i]]
+            if (e && e.pending === true && !e.error) return true
+        }
+        return false
+    }
+
     // ---- badges de cambios pendientes por par ----
     function badgeState(id) {
         if (root.syncRunning) return "sync"
@@ -181,6 +201,15 @@ PlasmoidItem {
         if (root.expanded) root.refreshPending()
     }
 
+    // estado de pendientes del icono (fondo): sin forzar dry-run en cada tick
+    Timer {
+        id: pendingLightTimer
+        interval: 30000
+        repeat: true
+        running: true
+        onTriggered: refreshPendingLight()
+    }
+
     Component.onCompleted: refreshStatus()
 
     // ============================================================
@@ -219,7 +248,8 @@ PlasmoidItem {
                     height: 8
                     radius: 4
                     color: root.syncRunning ? root.cPri
-                         : (root.ssdConnected ? root.cGreen : "#777777")
+                         : (root.anyPending() ? root.cAmber
+                         : (root.ssdConnected ? root.cGreen : "#777777"))
                     border.color: root.cBorder
                     border.width: 1
                 }

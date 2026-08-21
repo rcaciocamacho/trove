@@ -12,6 +12,9 @@ KCM.SimpleKCM {
     property string ssdUuid: ""
     property string ssdLabel: ""
     property bool autosync: true
+    property bool autosyncPeriodic: true
+    property int checkIntervalMin: 10
+    property int syncIntervalHours: 3
     property bool defaultDelete: false
     property string statusText: ""
     property bool loaded: false
@@ -80,6 +83,9 @@ KCM.SimpleKCM {
                 }
                 page.ssdUuid = c.config.ssd_uuid || ""
                 page.autosync = c.config.autosync_on_connect !== false
+                page.autosyncPeriodic = c.config.autosync_periodic !== false
+                page.checkIntervalMin = c.config.check_interval_min || 10
+                page.syncIntervalHours = c.config.sync_interval_hours || 3
                 page.defaultDelete = c.config.default_delete === true
                 selectUuid(deviceCombo, page.ssdUuid)
                 page.statusText = ""
@@ -98,6 +104,9 @@ KCM.SimpleKCM {
             ssd_uuid: uuid,
             ssd_label: label,
             autosync_on_connect: autosyncSwitch.checked,
+            autosync_periodic: periodicSwitch.checked,
+            check_interval_min: checkSpin.value,
+            sync_interval_hours: syncSpin.value,
             default_delete: deleteSwitch.checked
         }, function(d) {
             if (d && d.ok) {
@@ -131,6 +140,44 @@ KCM.SimpleKCM {
                 id: autosyncSwitch
                 text: "Sincronizar automáticamente al conectar la SSD"
                 checked: page.autosync
+            }
+
+            Controls.CheckBox {
+                id: periodicSwitch
+                text: "Revisión automática periódica"
+                checked: page.autosyncPeriodic
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.smallSpacing
+                PlasmaComponents3.Label { text: "Revisar cambios cada" }
+                Controls.SpinBox {
+                    id: checkSpin
+                    from: 1; to: 120
+                    editable: true
+                    value: page.checkIntervalMin
+                    enabled: periodicSwitch.checked
+                    Layout.preferredWidth: 90
+                }
+                PlasmaComponents3.Label { text: "minutos" }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.smallSpacing
+                PlasmaComponents3.Label { text: "Sincronizar si hay pendiente cada" }
+                Controls.SpinBox {
+                    id: syncSpin
+                    from: 1; to: 72
+                    editable: true
+                    value: page.syncIntervalHours
+                    enabled: periodicSwitch.checked
+                    Layout.preferredWidth: 70
+                }
+                PlasmaComponents3.Label { text: "horas" }
             }
 
             Controls.CheckBox {
