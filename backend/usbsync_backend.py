@@ -39,6 +39,21 @@ DEFAULT_CONFIG = {
     "sync_interval_hours": 3,     # cada cuántas horas sincronizar si hay cambios pendientes (0 = desactivado)
     "default_delete": False,    # espejo exacto (--delete) por defecto en pares nuevos
     "pairs": [],                # [{id, source, dest_rel, delete}]
+    "remote_backup": {          # backup diario completo de la SSD -> core-server (snapshots rotativos)
+        "enabled": False,
+        "host": "192.168.0.20",
+        "user": "rccamacho",
+        "ssh_key": "~/.ssh/id_ed25519",
+        "base_dir": "/backups/StorageSSD",
+        "backup_hour": 5,          # hora fija (0-23); si la SSD no está conectada, se hace en la 1ª conexión del día
+        "retention_days": 7,       # snapshots diarios a conservar (se borra el que exceda)
+        "last_date": "",           # YYYY-MM-DD del último backup remoto con éxito
+        "last_ts": "",             # timestamp ISO del último backup remoto
+        "last_ok": False,
+        "last_msg": "",
+        "last_files": 0,
+        "last_attempt_date": "",   # fecha del último INTENTO (éxito o fallo) — evita reintentos 2s
+    },
 }
 
 state = {
@@ -57,10 +72,19 @@ state = {
         "last_line": "",
     },
     "last_sync": None,  # {"ts": iso, "ok": bool, "msg": str, "files": int, "trigger": str}
+    "last_remote_backup": None,  # {"ts": iso, "ok": bool, "files": int, "snapshot": str, "trigger": str}
     "pending": {        # cambios no sincronizados por par (caché de rsync --dry-run)
         "pairs": {},    # pair_id -> {"pending": bool|None, "n": int, "error": str|None}
         "computed_at": 0.0,
         "computing": False,
+    },
+    "remote_backup": {  # estado en memoria del backup al core-server
+        "running": False,
+        "started": None,
+        "phase": "",
+        "pct": None,
+        "last_line": "",
+        "last_attempt_ts": 0.0,
     },
     "lock": threading.Lock(),
 }
@@ -560,9 +584,209 @@ def monitor_loop():
                 if sync_h > 0 and now - last_sync >= sync_h * 3600:
                     last_sync = now
                     threading.Thread(target=periodic_sync_if_pending, args=(ssd,), daemon=True).start()
+
+            # backup remoto diario (SSD -> core-server): hora fija o primera conexión del día
+            if remote_backup_due(ssd) and not state["remote_backup"]["running"]:
+                threading.Thread(target=run_remote_backup, args=("auto",), daemon=True).start()
         except Exception as e:
             log(f"monitor error: {e}")
         time.sleep(2)
+
+# ---------------------------------------------------------------- remote backup (SSD -> core-server)
+
+REMOTE_BACKUP_SSH_KEY = str(Path.home() / ".ssh" / "id_ed25519")
+
+def _remote_ssh_cmd(command: str, timeout: int = 60) -> subprocess.CompletedProcess:
+    """Ejecuta un comando remoto en el core-server vía SSH (una sóla ejecución)."""
+    rb = state["config"].get("remote_backup") or {}
+    host = rb.get("host") or ""
+    user = rb.get("user") or USER
+    key = rb.get("ssh_key") or REMOTE_BACKUP_SSH_KEY
+    cmd = ["ssh", "-i", os.path.expanduser(key), "-o", "BatchMode=yes",
+           "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=8",
+           f"{user}@{host}", command]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        r = subprocess.CompletedProcess(cmd, 124, "", "SSH timeout")
+        return r
+    except FileNotFoundError:
+        r = subprocess.CompletedProcess(cmd, 127, "", "ssh no disponible")
+        return r
+
+def list_remote_snapshots() -> list:
+    """Nombres de los snapshots diarios existentes en el core-server (solo YYYY-MM-DD)."""
+    rb = state["config"].get("remote_backup") or {}
+    base = (rb.get("base_dir") or "").rstrip("/")
+    r = _remote_ssh_cmd(f"ls -1 {base} 2>/dev/null")
+    if r.returncode != 0:
+        return []
+    names = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
+    return sorted(n for n in names if re.fullmatch(r"\d{4}-\d{2}-\d{2}", n))
+
+def _prune_remote_snapshots():
+    """Borra los snapshots más antiguos hasta dejar `retention_days` (los N más recientes)."""
+    rb = state["config"].get("remote_backup") or {}
+    base = (rb.get("base_dir") or "").rstrip("/")
+    keep = max(1, int(rb.get("retention_days") or 7))
+    snaps = list_remote_snapshots()
+    if len(snaps) > keep:
+        for old in snaps[:-keep]:
+            r = _remote_ssh_cmd(f"rm -rf {base}/{old}")
+            log(f"[RBACKUP] prune snapshot {old} rc={r.returncode}")
+        return True
+    return False
+
+def run_remote_backup(trigger: str = "manual") -> dict:
+    """Copia la SSD completa (raíz montada) al /backups del core-server usando rsync
+    sobre SSH con snapshots rotativos por hardlinks (--link-dest) y retención N días.
+
+    Devuelve {ok, msg, snapshot}.
+    """
+    rb = state["config"].get("remote_backup") or {}
+    with state["lock"]:
+        if state["sync"]["running"] or state["remote_backup"]["running"]:
+            return {"ok": False, "msg": "otra sync en curso", "snapshot": None}
+    if not rb.get("enabled"):
+        return {"ok": False, "msg": "backup remoto desactivado", "snapshot": None}
+    if not rb.get("host"):
+        return {"ok": False, "msg": "host remoto sin configurar", "snapshot": None}
+    ssd = detect_ssd()
+    if not ssd["connected"]:
+        return {"ok": False, "msg": "SSD no conectada", "snapshot": None}
+
+    src = ssd["mount"].rstrip("/")
+    base = (rb.get("base_dir") or "").rstrip("/")
+    remote = f"{rb.get('user') or USER}@{rb.get('host')}"
+    key = os.path.expanduser(rb.get("ssh_key") or REMOTE_BACKUP_SSH_KEY)
+    snapshot = time.strftime("%Y-%m-%d")
+    dest_path = f"{base}/{snapshot}"
+    dest = f"{remote}:{dest_path}"
+
+    # marcar el INTENTO de hoy (para no reintentar cada 2s en el monitor si algo falla)
+    _mark_remote_attempt()
+
+    # mkdir remoto del snapshot de hoy
+    mk = _remote_ssh_cmd(f"mkdir -p {dest_path}", timeout=15)
+    if mk.returncode != 0:
+        return {"ok": False, "msg": f"mkdir remoto falló: {(mk.stderr or '').strip()[:120]}", "snapshot": None}
+
+    # snapshot referente (el más reciente que ya exista) para --link-dest (hardlinks)
+    existing = list_remote_snapshots()
+    existing = [s for s in existing if s < snapshot]  # solo previos, no de hoy/futuro
+    link_dest = f"--link-dest={base}/{existing[-1]}" if existing else ""
+
+    cmd = ["rsync", "-a", "--partial", "--info=progress2", "--stats", "--mkpath",
+           "-e", " ".join(["ssh", "-i", key, "-o", "BatchMode=yes",
+                           "-o", "StrictHostKeyChecking=no"])]
+    if link_dest:
+        cmd.append(link_dest)
+    cmd += [src + "/", dest + "/"]
+
+    log(f"[RBACKUP] {trigger} {src}/ -> {dest}{'  (link-dest ' + link_dest + ')' if link_dest else ''}")
+    with state["lock"]:
+        state["remote_backup"]["running"] = True
+        state["remote_backup"]["started"] = time.time()
+        state["remote_backup"]["phase"] = "backup"
+        state["remote_backup"]["pct"] = None
+        state["remote_backup"]["last_line"] = ""
+        state["remote_backup"]["snapshot"] = snapshot
+
+    try:
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, errors="replace", env=env)
+    except FileNotFoundError:
+        with state["lock"]:
+            state["remote_backup"]["running"] = False
+        return {"ok": False, "msg": "rsync no instalado", "snapshot": snapshot}
+
+    buf = ""
+    try:
+        for chunk in iter(lambda: proc.stdout.read(4096), ""):
+            buf += chunk
+            parts = buf.split("\r")
+            buf = parts[-1]
+            for part in parts[:-1]:
+                if part.strip():
+                    with state["lock"]:
+                        state["remote_backup"]["last_line"] = part.strip()[:120]
+                        m = re.search(r"(\d+(?:\.\d+)?)\s*%", part)
+                        if m:
+                            state["remote_backup"]["pct"] = m.group(1)
+        if buf.strip():
+            m = re.search(r"(\d+(?:\.\d+)?)\s*%", buf)
+            with state["lock"]:
+                state["remote_backup"]["last_line"] = buf.strip()[:120]
+                if m:
+                    state["remote_backup"]["pct"] = m.group(1)
+        proc.wait(timeout=3600)
+    except Exception as e:
+        proc.kill()
+        with state["lock"]:
+            state["remote_backup"]["running"] = False
+        log(f"[RBACKUP] error: {e}")
+        return {"ok": False, "msg": str(e), "snapshot": snapshot}
+    finally:
+        with state["lock"]:
+            state["remote_backup"]["running"] = False
+
+    ok = proc.returncode == 0
+    files = 0
+    m = re.search(r"Number of regular files transferred:\s*(\d+)", buf)
+    if m:
+        files = int(m.group(1))
+    if ok:
+        _prune_remote_snapshots()
+        with state["lock"]:
+            st = state["config"].setdefault("remote_backup", {})
+            st["last_date"] = snapshot
+            st["last_ts"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            st["last_ok"] = True
+            state["last_remote_backup"] = {"ts": snapshot, "ok": True, "files": files,
+                                           "snapshot": snapshot, "trigger": trigger}
+        save_config()
+        log(f"[RBACKUP] OK {snapshot} ({files} archivos) — retención {len(list_remote_snapshots())} snapshots")
+    else:
+        with state["lock"]:
+            state["last_remote_backup"] = {"ts": snapshot, "ok": False, "files": 0,
+                                           "snapshot": snapshot, "trigger": trigger}
+        log(f"[RBACKUP] FALLO {snapshot} rc={proc.returncode}")
+    return {"ok": ok, "msg": f"{files} archivos" if ok else f"rsync error ({proc.returncode})", "snapshot": snapshot}
+
+def remote_backup_due(ssd: dict) -> bool:
+    """True si toca lanzar el backup remoto hoy: hora fija alcanzada Y SSD conectada,
+    o primera conexión tras la hora si aún no se ha hecho hoy. Una vez al día por
+    intento (last_attempt_date) y por éxito (last_date)."""
+    rb = state["config"].get("remote_backup") or {}
+    if not rb.get("enabled"):
+        return False
+    if not ssd["connected"]:
+        return False
+    with state["lock"]:
+        if state["sync"]["running"]:
+            return False  # no lanzar mientras una sync local hacia la SSD esté corriendo
+    today = time.strftime("%Y-%m-%d")
+    if rb.get("last_date") == today:
+        return False  # ya hecho hoy con éxito
+    if rb.get("last_attempt_date") == today:
+        return False  # ya se intentó hoy (evita reintentos cada 2s si falló)
+    hour = int(rb.get("backup_hour") or 5)
+    if int(time.strftime("%H")) >= hour:
+        return True
+    return False
+
+def _mark_remote_attempt():
+    """Marca el intento de hoy en config (para no reintentar cada 2s el mismo día)."""
+    with state["lock"]:
+        st = state["config"].setdefault("remote_backup", {})
+        st["last_attempt_date"] = time.strftime("%Y-%m-%d")
+        # persiste para que el guard sobreviva a reinicios del servicio
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(state["config"], indent=2, ensure_ascii=False),
+                               encoding="utf-8")
 
 # ---------------------------------------------------------------- HTTP API
 
@@ -623,9 +847,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "ssd_label_cfg": state["config"].get("ssd_label", ""),
                 "sync": sync,
                 "last_sync": state["last_sync"],
+                "last_remote_backup": state["last_remote_backup"],
+                "remote_backup": {
+                    "enabled": bool((state["config"].get("remote_backup") or {}).get("enabled")),
+                    "host": (state["config"].get("remote_backup") or {}).get("host", ""),
+                    "base_dir": (state["config"].get("remote_backup") or {}).get("base_dir", ""),
+                    "backup_hour": (state["config"].get("remote_backup") or {}).get("backup_hour", 5),
+                    "retention_days": (state["config"].get("remote_backup") or {}).get("retention_days", 7),
+                    "running": state["remote_backup"]["running"],
+                    "phase": state["remote_backup"]["phase"],
+                    "pct": state["remote_backup"]["pct"],
+                    "last_line": state["remote_backup"]["last_line"],
+                    "snapshot": state["remote_backup"].get("snapshot"),
+                    "last_date": (state["config"].get("remote_backup") or {}).get("last_date", ""),
+                    "last_ts": (state["config"].get("remote_backup") or {}).get("last_ts", ""),
+                    "last_ok": bool((state["config"].get("remote_backup") or {}).get("last_ok")),
+                },
                 "pairs_count": len(state["config"].get("pairs", [])),
                 "pairs": state["config"].get("pairs", []),
-                "version": "1.2.0",
+                "version": "1.3.0",
             })
         elif path == "/api/pairs":
             self._send({"ok": True, "pairs": state["config"].get("pairs", [])})
@@ -740,6 +980,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/sync/stop":
             stop_sync()
             self._send({"ok": True})
+        elif path == "/api/remote_backup":
+            rb = state["config"].get("remote_backup") or {}
+            if not rb.get("enabled"):
+                self._send({"ok": False, "error": "backup remoto desactivado", "enabled": False})
+                return
+            if state["remote_backup"]["running"] or state["sync"]["running"]:
+                self._send({"ok": False, "error": "otra sync en curso"})
+                return
+            threading.Thread(target=run_remote_backup, args=("manual",), daemon=True).start()
+            self._send({"ok": True, "started": True})
         elif path == "/api/pick_folder":
             start = (body.get("start") or "").strip()
             field = (body.get("field") or "source").strip()

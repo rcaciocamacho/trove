@@ -19,6 +19,8 @@ PlasmoidItem {
     readonly property color cText:    "#8ffcff"
     readonly property color cTextDim: "#3a8a9a"
     readonly property color cTextMed: "#5ab8cc"
+    // backup remoto (SSD -> core-server): violeta, distinto del cyan de la sync local
+    readonly property color cRemote: "#b44bff"
 
     property string apiUrl: "http://127.0.0.1:8135"
     property bool backendUp: false
@@ -36,6 +38,18 @@ PlasmoidItem {
     property bool lastSyncOk: true
     property bool pendingComputing: false
     property var pendingMap: ({})      // pair_id -> {pending, n, error}
+    // estado del backup remoto (SSD -> core-server)
+    property bool remoteBackupRunning: false
+    property bool lastRemoteOk: true
+    property string lastRemoteText: "Sin copia remota todavía"
+
+    // ---- tooltip del icono (hover) ----
+    // main = estado del último backup remoto (fecha/hora + resultado)
+    // sub  = estado de la sync local / SSD
+    Plasmoid.toolTipMainText: root.lastRemoteText
+    Plasmoid.toolTipSubText: root.syncRunning
+        ? ("Sincronizando " + (root.syncPctGlobal !== "" ? root.syncPctGlobal + "%" : "…"))
+        : (root.ssdConnected ? ("SSD " + root.ssdLabel + " conectada") : "SSD no conectada")
 
     ListModel { id: pairs }            // {id, source, dest_rel, del, last_ts, last_ok, last_files}
 
@@ -91,6 +105,21 @@ PlasmoidItem {
                 root.lastSyncText = "Sin sincronizaciones todavía"
                 root.lastSyncOk = true
             }
+            // estado del backup remoto (SSD -> core-server)
+            var rb = d.remote_backup || {}
+            root.remoteBackupRunning = rb.running === true
+            if (rb.running) {
+                root.lastRemoteOk = true
+                root.lastRemoteText = "Backup remoto EN CURSO" + (rb.pct ? "  " + rb.pct + "%" : "")
+            } else if (rb.last_ts) {
+                root.lastRemoteOk = rb.last_ok === true
+                root.lastRemoteText = (rb.last_ok ? "Copia remota OK" : "Copia remota FALLÓ") + "  ·  " + rb.last_ts
+            } else {
+                root.lastRemoteOk = true
+                root.lastRemoteText = "Sin copia remota todavía"
+            }
+            // tooltip del icono: main = último backup remoto, sub = sync/SSD (bindings en raíz)
+            // (Plasmoid.toolTipMainText/SubText se actualizan por binding, no requiere asignación aquí)
             // pares configurados (con su última sync por par)
             pairs.clear()
             var pl = d.pairs || []
@@ -242,16 +271,25 @@ PlasmoidItem {
                     }
                 }
                 Rectangle {
+                    id: statusDot
                     anchors.right: parent.right
                     anchors.top: parent.top
                     width: 8
                     height: 8
                     radius: 4
                     color: root.syncRunning ? root.cPri
+                         : (root.remoteBackupRunning ? root.cRemote
                          : (root.anyPending() ? root.cAmber
-                         : (root.ssdConnected ? root.cGreen : "#777777"))
+                         : (root.ssdConnected ? root.cGreen : "#777777")))
                     border.color: root.cBorder
                     border.width: 1
+                    // Pulso violeta mientras corre el backup remoto (distinto del giro cyan de sync)
+                    SequentialAnimation on opacity {
+                        running: root.remoteBackupRunning
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.25; duration: 450; easing.type: Easing.InOutQuad }
+                        NumberAnimation { to: 1.0;  duration: 450; easing.type: Easing.InOutQuad }
+                    }
                 }
             }
             PlasmaComponents3.Label {
@@ -301,13 +339,15 @@ PlasmoidItem {
                     Rectangle {
                         Layout.preferredWidth: 9; Layout.preferredHeight: 9; radius: 5
                         color: root.syncRunning ? root.cPri
+                             : (root.remoteBackupRunning ? root.cRemote
                              : (root.ssdConnected ? root.cGreen
-                             : (root.ssdAmbiguous ? root.cAmber : "#777777"))
+                             : (root.ssdAmbiguous ? root.cAmber : "#777777")))
                     }
                     PlasmaComponents3.Label {
-                        text: root.syncRunning ? "Sincronizando"
+                        text: root.remoteBackupRunning ? "Respaldando en core-server"
+                             : (root.syncRunning ? "Sincronizando"
                              : (root.ssdConnected ? "SSD conectada"
-                             : (root.ssdAmbiguous ? "SSD no identificada" : "SSD no detectada"))
+                             : (root.ssdAmbiguous ? "SSD no identificada" : "SSD no detectada")))
                         font.pixelSize: 11
                         color: root.cText
                         opacity: 0.75
