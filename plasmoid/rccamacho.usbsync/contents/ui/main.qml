@@ -8,19 +8,41 @@ import org.kde.plasma.components as PlasmaComponents3
 PlasmoidItem {
     id: root
 
-    // Paleta oscura fija (patrón JARVIS — Kirigami.Theme no aplica el color scheme)
-    readonly property color cBG:      "#00060a"
-    readonly property color cPanel:   "#010d14"
-    readonly property color cBorder:  "#0d3347"
-    readonly property color cPri:     "#00d4ff"
-    readonly property color cGreen:   "#00ff88"
-    readonly property color cRed:     "#ff3366"
-    readonly property color cAmber:   "#f5a623"
-    readonly property color cText:    "#8ffcff"
-    readonly property color cTextDim: "#3a8a9a"
-    readonly property color cTextMed: "#5ab8cc"
-    // backup remoto (SSD -> core-server): violeta, distinto del cyan de la sync local
-    readonly property color cRemote: "#b44bff"
+    // ============================================================
+    //  ESTILO — lenguaje visual de LibreLinkUp (theme-aware)
+    //  Neutros derivados del tema (se adaptan a claro/oscuro).
+    //  Acentos = semántica de estado: verde/ámbar/rojo/azul.
+    // ============================================================
+    readonly property color cText:   Kirigami.Theme.textColor
+    readonly property color cMed:    Qt.alpha(Kirigami.Theme.textColor, 0.80)   // secundario destacado
+    readonly property color cDim:    Qt.alpha(Kirigami.Theme.textColor, 0.60)   // pies / captions
+    readonly property color cCard:   Qt.alpha(Kirigami.Theme.textColor, 0.05)   // fondo de tarjeta
+    readonly property color cBorder: Qt.alpha(Kirigami.Theme.textColor, 0.10)   // borde / track / divisor
+    readonly property color cOK:     "#2ecc71"   // verde  — conectado / ok
+    readonly property color cWarn:   "#f39c12"   // ámbar  — aviso
+    readonly property color cErr:    "#e74c3c"   // rojo   — crítico / caído
+    readonly property color cInfo:   "#3498db"   // azul   — acento informativo (sincronización)
+
+    // medidas (escala LibreLinkUp)
+    readonly property int rCard:   8
+    readonly property int mCard:   10   // margen interno de tarjeta
+    readonly property int mMargin: 12   // margen del popup
+    readonly property int gSpace:  8    // espaciado entre bloques
+    readonly property int fsCap:   10   // caption
+    readonly property int fsBody:  11   // cuerpo
+    readonly property int fsVal:   22   // valor
+
+    // ---- alias heredados (repintado: conservan los nombres que usa la lógica) ----
+    readonly property color cBG:      Kirigami.Theme.backgroundColor
+    readonly property color cPanel:   root.cCard
+    readonly property color cPri:     root.cInfo
+    readonly property color cGreen:   root.cOK
+    readonly property color cRed:     root.cErr
+    readonly property color cAmber:   root.cWarn
+    readonly property color cTextDim: root.cDim
+    readonly property color cTextMed: root.cMed
+    // backup remoto (SSD -> core-server): tono propio, distinto del azul de la sync local
+    readonly property color cRemote:  "#9b59b6"
 
     property string apiUrl: "http://127.0.0.1:8135"
     property bool backendUp: false
@@ -46,8 +68,11 @@ PlasmoidItem {
     // ---- tooltip del icono (hover) ----
     // main = estado del último backup remoto (fecha/hora + resultado)
     // sub  = estado de la sync local / SSD
-    Plasmoid.toolTipMainText: root.lastRemoteText
-    Plasmoid.toolTipSubText: root.syncRunning
+    // OJO KF6: toolTipMainText/SubText son propiedades DIRECTAS del PlasmoidItem raíz,
+    // ya NO cuelgan del objeto Plasmoid adjunto (sintaxis Plasma 5, provoca
+    // "Cannot assign to non-existent property").
+    toolTipMainText: root.lastRemoteText
+    toolTipSubText: root.syncRunning
         ? ("Sincronizando " + (root.syncPctGlobal !== "" ? root.syncPctGlobal + "%" : "…"))
         : (root.ssdConnected ? ("SSD " + root.ssdLabel + " conectada") : "SSD no conectada")
 
@@ -190,9 +215,9 @@ PlasmoidItem {
     }
     function badgeBg(id) {
         var s = root.badgeState(id)
-        if (s === "pend") return "#3d2a0a"
-        if (s === "ok") return "#0a3d1a"
-        return "#12202a"
+        if (s === "pend") return Qt.rgba(root.cWarn.r, root.cWarn.g, root.cWarn.b, 0.18)
+        if (s === "ok")   return Qt.rgba(root.cOK.r, root.cOK.g, root.cOK.b, 0.18)
+        return root.cCard
     }
     function badgeFg(id) {
         var s = root.badgeState(id)
@@ -280,7 +305,7 @@ PlasmoidItem {
                     color: root.syncRunning ? root.cPri
                          : (root.remoteBackupRunning ? root.cRemote
                          : (root.anyPending() ? root.cAmber
-                         : (root.ssdConnected ? root.cGreen : "#777777")))
+                         : (root.ssdConnected ? root.cGreen : root.cDim)))
                     border.color: root.cBorder
                     border.width: 1
                     // Pulso violeta mientras corre el backup remoto (distinto del giro cyan de sync)
@@ -295,7 +320,7 @@ PlasmoidItem {
             PlasmaComponents3.Label {
                 text: root.syncPctGlobal !== "" ? root.syncPctGlobal + "%" : ""
                 visible: root.syncRunning
-                font.pixelSize: 10
+                font.pixelSize: root.fsCap
                 font.weight: Font.DemiBold
                 color: root.cPri
             }
@@ -311,134 +336,147 @@ PlasmoidItem {
     // ============================================================
     fullRepresentation: Item {
         implicitWidth: 460
-        implicitHeight: mainCol.implicitHeight
-
-        Rectangle { anchors.fill: parent; color: root.cBG }
+        implicitHeight: mainCol.implicitHeight + 2 * root.mMargin
 
         ColumnLayout {
             id: mainCol
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            spacing: 0
+            anchors.leftMargin: root.mMargin
+            anchors.rightMargin: root.mMargin
+            anchors.topMargin: root.mMargin
+            spacing: root.gSpace
 
             // ---------- header ----------
-            Item { Layout.fillWidth: true; Layout.preferredHeight: 44
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    spacing: 8
-                    Image { source: "../images/trove-usb.svg"; sourceSize: Qt.size(22, 22); Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
-                    PlasmaComponents3.Label {
-                        text: "Trove · Sincronización USB"
-                        font.weight: Font.DemiBold
-                        font.pixelSize: 13
-                        Layout.fillWidth: true
-                    }
-                    Rectangle {
-                        Layout.preferredWidth: 9; Layout.preferredHeight: 9; radius: 5
-                        color: root.syncRunning ? root.cPri
-                             : (root.remoteBackupRunning ? root.cRemote
-                             : (root.ssdConnected ? root.cGreen
-                             : (root.ssdAmbiguous ? root.cAmber : "#777777")))
-                    }
-                    PlasmaComponents3.Label {
-                        text: root.remoteBackupRunning ? "Respaldando en core-server"
-                             : (root.syncRunning ? "Sincronizando"
-                             : (root.ssdConnected ? "SSD conectada"
-                             : (root.ssdAmbiguous ? "SSD no identificada" : "SSD no detectada")))
-                        font.pixelSize: 11
-                        color: root.cText
-                        opacity: 0.75
-                    }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: root.gSpace
+                Image { source: "../images/trove-usb.svg"; sourceSize: Qt.size(22, 22); Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
+                PlasmaComponents3.Label {
+                    text: "Trove · Sincronización USB"
+                    font.weight: Font.DemiBold
+                    font.pixelSize: 14
+                    Layout.fillWidth: true
+                }
+                Rectangle {
+                    Layout.preferredWidth: 9; Layout.preferredHeight: 9; radius: 5
+                    color: root.syncRunning ? root.cPri
+                         : (root.remoteBackupRunning ? root.cRemote
+                         : (root.ssdConnected ? root.cGreen
+                         : (root.ssdAmbiguous ? root.cAmber : root.cDim)))
+                }
+                PlasmaComponents3.Label {
+                    text: root.remoteBackupRunning ? "Respaldando en core-server"
+                         : (root.syncRunning ? "Sincronizando"
+                         : (root.ssdConnected ? "SSD conectada"
+                         : (root.ssdAmbiguous ? "SSD no identificada" : "SSD no detectada")))
+                    font.pixelSize: root.fsBody
+                    color: root.cMed
                 }
             }
 
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1
-                color: root.cBorder
-                opacity: 0.5 }
-
-            // ---------- aviso backend caído ----------
+            // ---------- aviso backend caído (caja de estado) ----------
             Rectangle {
                 Layout.fillWidth: true
                 visible: !root.backendUp
-                color: "#3d0a0a"
-                Layout.preferredHeight: 34
+                implicitHeight: backendLabel.contentHeight + 2 * root.mCard
+                radius: 6
+                color: Qt.rgba(root.cErr.r, root.cErr.g, root.cErr.b, 0.10)
+                border.width: 1
+                border.color: Qt.alpha(root.cErr, 0.20)
                 PlasmaComponents3.Label {
+                    id: backendLabel
                     anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
+                    anchors.margins: root.mCard
                     verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.WordWrap
                     text: "⚠ Backend no disponible — inicia usbsync.service"
-                    font.pixelSize: 11
-                    color: "#ff8080"
+                    font.pixelSize: root.fsCap
+                    color: root.cErr
                 }
             }
 
-            // ---------- estado SSD ----------
-            Item {
+            // ---------- tarjeta: estado SSD ----------
+            Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: root.ssdConnected ? 30 : 26
+                Layout.preferredHeight: root.ssdConnected ? 52 : 44
                 visible: root.backendUp
-                PlasmaComponents3.Label {
+                radius: root.rCard
+                color: root.cCard
+                border.width: 1
+                border.color: root.cBorder
+
+                RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    text: root.ssdConnected ? ("●  " + root.ssdLabel + "   " + root.ssdMount)
-                         : (root.ssdAmbiguous ? "Hay varios dispositivos extraíbles — fija la SSD en Configurar"
-                         : (root.ssdLabelCfg ? ("○  " + root.ssdLabelCfg + " no conectada")
-                         : "○  Conecta la SSD USB para sincronizar"))
-                    font.pixelSize: 11
-                    color: root.ssdConnected ? root.cGreen
-                         : (root.ssdAmbiguous ? root.cAmber : root.cText)
-                    opacity: 0.85
+                    anchors.margins: root.mCard
+                    spacing: root.gSpace
+                    Kirigami.Icon {
+                        source: "drive-removable-media"
+                        Layout.preferredWidth: 22
+                        Layout.preferredHeight: 22
+                        opacity: root.ssdConnected ? 1 : 0.5
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 1
+                        PlasmaComponents3.Label {
+                            text: "UNIDAD SSD"
+                            font.pixelSize: root.fsCap
+                            font.weight: Font.Medium
+                            opacity: 0.6
+                        }
+                        PlasmaComponents3.Label {
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                            text: root.ssdConnected ? ("●  " + root.ssdLabel + "   " + root.ssdMount)
+                                 : (root.ssdAmbiguous ? "Hay varios dispositivos extraíbles — fija la SSD en Configurar"
+                                 : (root.ssdLabelCfg ? ("○  " + root.ssdLabelCfg + " no conectada")
+                                 : "○  Conecta la SSD USB para sincronizar"))
+                            font.pixelSize: root.fsBody
+                            color: root.ssdConnected ? root.cGreen
+                                 : (root.ssdAmbiguous ? root.cAmber : root.cText)
+                            opacity: 0.85
+                        }
+                    }
                 }
             }
 
             // ---------- pares configurados (solo lectura) ----------
-            Item {
+            PlasmaComponents3.Label {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 24
-                Layout.leftMargin: 14
-                Layout.rightMargin: 14
-                Layout.topMargin: 6
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
+                Layout.topMargin: 2
                 visible: root.backendUp && pairs.count > 0
-                PlasmaComponents3.Label {
-                    text: "PARES CONFIGURADOS  ·  " + pairs.count
-                    font.pixelSize: 9
-                    font.weight: Font.DemiBold
-                    color: root.cTextDim
-                }
+                text: "PARES CONFIGURADOS  ·  " + pairs.count
+                font.pixelSize: root.fsCap
+                font.weight: Font.DemiBold
+                opacity: 0.6
             }
 
             ListView {
                 id: pairList
                 Layout.fillWidth: true
                 Layout.preferredHeight: contentHeight
-                Layout.leftMargin: 10
-                Layout.rightMargin: 10
                 visible: pairs.count > 0
                 clip: true
                 model: pairs
-                spacing: 2
+                spacing: root.gSpace - 2
                 interactive: false
 
                 delegate: Rectangle {
-                    width: pairList.width - 20
-                    height: 42
-                    radius: 4
-                    color: root.cPanel
+                    width: pairList.width
+                    height: 50
+                    radius: root.rCard
+                    color: root.cCard
+                    border.width: 1
+                    border.color: root.cBorder
 
                     ColumnLayout {
                         anchors.fill: parent
-                        anchors.leftMargin: 8
-                        anchors.rightMargin: 8
-                        anchors.topMargin: 4
-                        anchors.bottomMargin: 3
-                        spacing: 1
+                        anchors.margins: root.mCard
+                        spacing: 2
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -446,19 +484,19 @@ PlasmoidItem {
                                 text: model.source
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
-                                font.pixelSize: 11
+                                font.pixelSize: root.fsBody
                                 color: root.cText
                             }
                             PlasmaComponents3.Label {
                                 text: "→"
-                                font.pixelSize: 11
-                                color: root.cTextDim
+                                font.pixelSize: root.fsBody
+                                color: root.cDim
                             }
                             PlasmaComponents3.Label {
                                 text: model.dest_rel
                                 Layout.fillWidth: true
                                 elide: Text.ElideMiddle
-                                font.pixelSize: 11
+                                font.pixelSize: root.fsBody
                                 color: root.cTextMed
                             }
                             Item {
@@ -495,7 +533,6 @@ PlasmoidItem {
                                 text: model.del ? "espejo exacto" : ""
                                 font.pixelSize: 9
                                 color: root.cTextDim
-                                opacity: 0.7
                             }
                         }
                     }
@@ -503,25 +540,22 @@ PlasmoidItem {
             }
 
             // ---------- placeholder sin pares ----------
-            Item {
+            PlasmaComponents3.Label {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 34
+                Layout.topMargin: 2
                 visible: pairs.count === 0 && root.backendUp
-                PlasmaComponents3.Label {
-                    anchors.centerIn: parent
-                    text: "Sin pares — añádelos en Configurar → Pares"
-                    font.pixelSize: 11
-                    color: root.cTextDim
-                    opacity: 0.9
-                }
+                text: "Sin pares — añádelos en Configurar → Pares"
+                font.pixelSize: root.fsBody
+                color: root.cDim
+                horizontalAlignment: Text.AlignHCenter
             }
 
             // ---------- botón sincronizar / detener ----------
-            Item { Layout.preferredHeight: 10 }
+            Item { Layout.preferredHeight: 2 }
+
             Controls.Button {
                 Layout.fillWidth: true
-                Layout.leftMargin: 10
-                Layout.rightMargin: 10
+                Layout.topMargin: 2
                 implicitHeight: 34
                 visible: root.backendUp
                 enabled: root.ssdConnected
@@ -532,41 +566,50 @@ PlasmoidItem {
             }
             PlasmaComponents3.Label {
                 Layout.fillWidth: true
-                Layout.leftMargin: 10
-                Layout.rightMargin: 10
                 Layout.topMargin: 3
                 visible: root.backendUp && !root.ssdConnected
                 text: "Conecta la SSD para habilitar la sincronización"
-                font.pixelSize: 10
-                color: root.cTextDim
-                opacity: 0.9
+                font.pixelSize: root.fsCap
+                color: root.cDim
                 horizontalAlignment: Text.AlignHCenter
             }
 
             // ---------- progreso ----------
-            Item {
+            Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: root.syncRunning ? 44 : 0
                 visible: root.syncRunning
+                implicitHeight: progCol.implicitHeight + 2 * root.mCard
+                radius: root.rCard
+                color: root.cCard
+                border.width: 1
+                border.color: root.cBorder
+
                 ColumnLayout {
+                    id: progCol
                     anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    anchors.topMargin: 6
-                    spacing: 3
+                    anchors.margins: root.mCard
+                    spacing: 4
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 8
-                        Controls.ProgressBar {
+                        spacing: root.gSpace
+                        Rectangle {
                             Layout.fillWidth: true
                             Layout.preferredHeight: 6
-                            from: 0
-                            to: 100
-                            value: root.syncPctGlobal !== "" ? parseFloat(root.syncPctGlobal) : 0
+                            radius: 3
+                            color: root.cBorder
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: parent.width * Math.min(1, (root.syncPctGlobal !== "" ? parseFloat(root.syncPctGlobal) : 0) / 100)
+                                height: 4
+                                radius: 2
+                                color: root.cPri
+                            }
                         }
                         PlasmaComponents3.Label {
                             text: root.syncPctGlobal !== "" ? root.syncPctGlobal + "%" : ""
-                            font.pixelSize: 10
+                            font.pixelSize: root.fsBody
+                            font.weight: Font.DemiBold
                             color: root.cPri
                         }
                     }
@@ -574,32 +617,26 @@ PlasmoidItem {
                         Layout.fillWidth: true
                         text: root.syncPairInfo + (root.syncLastLine ? "   ·   " + root.syncLastLine : "")
                         elide: Text.ElideRight
-                        font.pixelSize: 10
-                        color: root.cTextDim
-                        opacity: 0.9
+                        font.pixelSize: root.fsCap
+                        color: root.cDim
                     }
                 }
             }
 
             // ---------- última sincronización ----------
-            Item {
+            PlasmaComponents3.Label {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 30
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
+                Layout.topMargin: root.gSpace
                 visible: root.backendUp && !root.syncRunning
-                PlasmaComponents3.Label {
-                    anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    text: "Última: " + root.lastSyncText
-                    font.pixelSize: 10
-                    color: root.lastSyncOk ? root.cTextMed : root.cRed
-                    opacity: 0.85
-                }
+                elide: Text.ElideRight
+                text: "Última: " + root.lastSyncText
+                font.pixelSize: root.fsBody
+                color: root.lastSyncOk ? root.cTextMed : root.cRed
             }
 
-            Item { Layout.preferredHeight: 6 }
+            Item { Layout.preferredHeight: 2 }
         }
     }
 }
