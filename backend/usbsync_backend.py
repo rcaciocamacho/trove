@@ -670,7 +670,9 @@ def run_remote_backup(trigger: str = "manual") -> dict:
     # mkdir remoto del snapshot de hoy
     mk = _remote_ssh_cmd(f"mkdir -p {dest_path}", timeout=15)
     if mk.returncode != 0:
-        return {"ok": False, "msg": f"mkdir remoto falló: {(mk.stderr or '').strip()[:120]}", "snapshot": None}
+        motivo = (mk.stderr or mk.stdout or "").strip()[:160] or f"rc={mk.returncode}"
+        _mark_remote_failure(f"mkdir remoto falló: {motivo}", trigger)
+        return {"ok": False, "msg": f"mkdir remoto falló: {motivo}", "snapshot": None}
 
     # snapshot referente (el más reciente que ya exista) para --link-dest (hardlinks)
     existing = list_remote_snapshots()
@@ -701,11 +703,14 @@ def run_remote_backup(trigger: str = "manual") -> dict:
     except FileNotFoundError:
         with state["lock"]:
             state["remote_backup"]["running"] = False
+        _mark_remote_failure("rsync no instalado", trigger, snapshot)
         return {"ok": False, "msg": "rsync no instalado", "snapshot": snapshot}
 
     buf = ""
+    todo = ""   # salida completa: el resumen de --stats llega al final y `buf` se consume
     try:
         for chunk in iter(lambda: proc.stdout.read(4096), ""):
+            todo += chunk
             buf += chunk
             parts = buf.split("\r")
             buf = parts[-1]
@@ -727,7 +732,7 @@ def run_remote_backup(trigger: str = "manual") -> dict:
         proc.kill()
         with state["lock"]:
             state["remote_backup"]["running"] = False
-        log(f"[RBACKUP] error: {e}")
+        _mark_remote_failure(f"error: {type(e).__name__}: {e}", trigger, snapshot)
         return {"ok": False, "msg": str(e), "snapshot": snapshot}
     finally:
         with state["lock"]:
@@ -735,7 +740,7 @@ def run_remote_backup(trigger: str = "manual") -> dict:
 
     ok = proc.returncode == 0
     files = 0
-    m = re.search(r"Number of regular files transferred:\s*(\d+)", buf)
+    m = re.search(r"Number of regular files transferred:\s*(\d+)", todo)
     if m:
         files = int(m.group(1))
     if ok:
@@ -750,11 +755,31 @@ def run_remote_backup(trigger: str = "manual") -> dict:
         save_config()
         log(f"[RBACKUP] OK {snapshot} ({files} archivos) — retención {len(list_remote_snapshots())} snapshots")
     else:
-        with state["lock"]:
-            state["last_remote_backup"] = {"ts": snapshot, "ok": False, "files": 0,
-                                           "snapshot": snapshot, "trigger": trigger}
-        log(f"[RBACKUP] FALLO {snapshot} rc={proc.returncode}")
+        ult = (state["remote_backup"].get("last_line") or "").strip()
+        motivo = f"rsync rc={proc.returncode}" + (f": {ult[:120]}" if ult else "")
+        _mark_remote_failure(motivo, trigger, snapshot)
     return {"ok": ok, "msg": f"{files} archivos" if ok else f"rsync error ({proc.returncode})", "snapshot": snapshot}
+
+def _mark_remote_failure(msg: str, trigger: str = "auto", snapshot: str = ""):
+    """Deja constancia VISIBLE de un fallo del backup remoto.
+
+    Antes, si el `mkdir -p` remoto fallaba (host caído, IP cambiada, red distinta),
+    `run_remote_backup` retornaba sin log ni estado: el panel seguía mostrando el
+    último OK de semanas atrás y el fallo pasaba inadvertido.
+    """
+    ahora = time.strftime("%Y-%m-%d %H:%M:%S")
+    with state["lock"]:
+        st = state["config"].setdefault("remote_backup", {})
+        st["last_ok"] = False
+        st["last_msg"] = msg[:200]
+        st["last_ts"] = ahora
+        state["last_remote_backup"] = {"ts": ahora, "ok": False, "files": 0,
+                                       "snapshot": snapshot or None,
+                                       "trigger": trigger, "msg": msg[:200]}
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(json.dumps(state["config"], indent=2, ensure_ascii=False),
+                               encoding="utf-8")
+    log(f"[RBACKUP] FALLO: {msg}")
 
 def remote_backup_due(ssd: dict) -> bool:
     """True si toca lanzar el backup remoto hoy: hora fija alcanzada Y SSD conectada,
